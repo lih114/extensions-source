@@ -7,6 +7,7 @@ on:
       - comick-test
     paths:
       - "src/all/comicklive/**"
+      - ".github/scripts/publish-li-repo.py"
       - ".github/workflows/publish-comick-test.yml"
 
 permissions:
@@ -43,11 +44,14 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew src:all:comicklive:assembleRelease
 
-      - name: Upload APK
+      - name: Upload build files
         uses: actions/upload-artifact@v4
         with:
-          name: individual-apks
-          path: "**/build/outputs/apk/release/*.apk"
+          name: comick-build-files
+          path: |
+            **/build/outputs/apk/release/*.apk
+            **/build/outputs/jar/release/*.jar
+            **/build/keiyoushi-source-info.json
           if-no-files-found: error
           retention-days: 1
 
@@ -62,17 +66,11 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Download APK
+      - name: Download build files
         uses: actions/download-artifact@v4
         with:
-          name: individual-apks
-          path: ~/apk-artifacts/individual-apks
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
+          name: comick-build-files
+          path: ~/apk-artifacts/comick-build-files
 
       - name: Checkout source scripts
         uses: actions/checkout@v4
@@ -81,57 +79,39 @@ jobs:
           path: main
           persist-credentials: false
 
-      - name: Create repository files
-        shell: bash
-        run: |
-          cd main
-
-          python ./.github/scripts/move-built-apks.py
-
-          INSPECTOR_LINK="$(curl -s \
-            https://api.github.com/repos/keiyoushi/extensions-inspector/releases/latest \
-            | jq -r '.assets[0].browser_download_url')"
-
-          curl -L "$INSPECTOR_LINK" -o Inspector.jar
-
-          java -jar Inspector.jar "repo/apk" "output.json" "tmp"
-
-          python ./.github/scripts/create-repo.py
-
       - name: Checkout published repository
         uses: actions/checkout@v4
         with:
           repository: lih114/extensions
           token: ${{ secrets.BOT_PAT }}
           ref: repo
-          path: published
+          path: repo
           persist-credentials: true
 
-      - name: Replace inherited catalog
+      - name: Publish repository
+        env:
+          DELETE: "[]"
         shell: bash
         run: |
-          cd published
+          cd repo
 
-          rm -rf apk icon jar
-          rm -f index.json index.min.json index.pb
+          pip install protobuf
 
-          mkdir -p apk icon jar
-
-      - name: Merge and publish
-        shell: bash
-        run: |
-          cd published
-
-          python ../main/.github/scripts/merge-repo.py "[]"
+          python ../main/.github/scripts/publish-li-repo.py "$DELETE"
 
           git config user.name "lih114"
           git config user.email "lih114@users.noreply.github.com"
 
+          git status
           git add .
 
           if ! git diff --cached --quiet; then
             git commit -m "Publish Comick Li Test"
             git push
+
+            curl -L "https://purge.jsdelivr.net/gh/lih114/extensions@repo/index.min.json"
+            curl -L "https://purge.jsdelivr.net/gh/lih114/extensions@repo/index.json"
+            curl -L "https://purge.jsdelivr.net/gh/lih114/extensions@repo/index.pb"
           else
             echo "No changes to publish"
           fi
