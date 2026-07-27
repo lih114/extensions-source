@@ -1,4 +1,4 @@
-name: Build Comick Test
+name: Publish Comick Test
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build signed APK
+    name: Build signed Comick APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -43,14 +43,95 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew src:all:comicklive:assembleRelease
 
-      - name: Upload signed APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: comick-li-test-apk
-          path: src/all/comicklive/build/outputs/apk/release/*.apk
+          name: individual-apks
+          path: "**/build/outputs/apk/release/*.apk"
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
       - name: Remove signing key
         if: always()
         run: rm -f signingkey.jks
+
+  publish:
+    name: Publish Mihon repository
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: individual-apks
+          path: ~/apk-artifacts/individual-apks
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Checkout source scripts
+        uses: actions/checkout@v4
+        with:
+          ref: comick-test
+          path: main
+          persist-credentials: false
+
+      - name: Create repository files
+        shell: bash
+        run: |
+          cd main
+
+          python ./.github/scripts/move-built-apks.py
+
+          INSPECTOR_LINK="$(curl -s \
+            https://api.github.com/repos/keiyoushi/extensions-inspector/releases/latest \
+            | jq -r '.assets[0].browser_download_url')"
+
+          curl -L "$INSPECTOR_LINK" -o Inspector.jar
+
+          java -jar Inspector.jar "repo/apk" "output.json" "tmp"
+
+          python ./.github/scripts/create-repo.py
+
+      - name: Checkout published repository
+        uses: actions/checkout@v4
+        with:
+          repository: lih114/extensions
+          token: ${{ secrets.BOT_PAT }}
+          ref: repo
+          path: published
+          persist-credentials: true
+
+      - name: Replace inherited catalog
+        shell: bash
+        run: |
+          cd published
+
+          rm -rf apk icon jar
+          rm -f index.json index.min.json index.pb
+
+          mkdir -p apk icon jar
+
+      - name: Merge and publish
+        shell: bash
+        run: |
+          cd published
+
+          python ../main/.github/scripts/merge-repo.py "[]"
+
+          git config user.name "lih114"
+          git config user.email "lih114@users.noreply.github.com"
+
+          git add .
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish Comick Li Test"
+            git push
+          else
+            echo "No changes to publish"
+          fi
